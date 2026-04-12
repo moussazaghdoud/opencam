@@ -115,6 +115,13 @@ export default function CameraFeed({ cameraId, cameraName, className = "" }: Cam
             announce("safety_jacket", "Security jacket detected");
           }
 
+          // Announce detected objects
+          if (Array.isArray(data.objects)) {
+            for (const obj of data.objects) {
+              announce(`obj_${obj}`, `${obj} detected`);
+            }
+          }
+
           // Draw frame on canvas
           const canvas = canvasRef.current;
           if (!canvas || !data.frame) return;

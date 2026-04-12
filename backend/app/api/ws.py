@@ -91,6 +91,11 @@ async def camera_feed(websocket: WebSocket, camera_id: int):
     """WebSocket endpoint for live camera feed with detections + face overlay."""
     await websocket.accept()
 
+    # Object identification state (runs every ~2s, not every frame)
+    _obj_frame_counter = 0
+    _obj_interval = 20  # every 20th frame ≈ every 2 seconds at 10fps
+    _last_objects: list[dict] = []
+
     try:
         while True:
             frame = stream_manager.get_frame(camera_id)
@@ -172,6 +177,24 @@ async def camera_feed(websocket: WebSocket, camera_id: int):
                     cv2.rectangle(annotated, (px1, py1), (px2, py2), (0, 255, 0), 2)
                     safety_jacket_detected = True
 
+            # Object identification (every ~2s to save CPU)
+            _obj_frame_counter += 1
+            if settings.ENABLE_OBJECT_IDENTIFICATION and _obj_frame_counter % _obj_interval == 0:
+                try:
+                    from app.services.object_identifier import object_identifier
+                    _last_objects = object_identifier.identify(frame, confidence=0.35)
+                except Exception:
+                    pass
+
+            # Draw identified objects on frame
+            for obj in _last_objects:
+                ox1, oy1, ox2, oy2 = obj["bbox"]
+                obj_color = (0, 0, 255) if obj.get("high_alert") else (255, 200, 0)
+                cv2.rectangle(annotated, (ox1, oy1), (ox2, oy2), obj_color, 2)
+                obj_label = f"{obj['label']} {obj['confidence']:.0%}"
+                cv2.putText(annotated, obj_label, (ox1, oy1 - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, obj_color, 2)
+
             # Heatmap overlay (toggled via API, only if module enabled)
             if settings.ENABLE_HEATMAP and _heatmap_mode.get(camera_id, False):
                 heatmap_img = heatmap_accumulator.get_heatmap_image(camera_id, w, h)
@@ -183,6 +206,9 @@ async def camera_feed(websocket: WebSocket, camera_id: int):
             _, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 70])
             b64 = base64.b64encode(buffer.tobytes()).decode("utf-8")
 
+            # Build object labels for frontend announcements (only announced ones)
+            obj_labels = [o["label"] for o in _last_objects if o.get("announce") and o["label"] != "Person"]
+
             await websocket.send_json({
                 "frame": b64,
                 "detections": detections,
@@ -191,6 +217,7 @@ async def camera_feed(websocket: WebSocket, camera_id: int):
                 "privacy_mode": privacy,
                 "camera_id": camera_id,
                 "person_count": person_count,
+                "objects": obj_labels,
             })
 
             await asyncio.sleep(0.1)

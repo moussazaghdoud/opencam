@@ -6,6 +6,7 @@ These endpoints only READ from the events table and WRITE to ai_enrichments.
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -143,3 +144,40 @@ def get_baseline(camera_id: int):
         "avg_zone_entries": round(bl.enter_count, 1),
         "avg_confidence": round(bl.avg_confidence, 3),
     }
+
+
+# ---------------------------------------------------------------------------
+# Detection Preferences — user-configurable object detection settings
+# ---------------------------------------------------------------------------
+
+@router.get("/detection-prefs")
+def get_detection_prefs():
+    """Get current detection preferences (which objects to detect/announce)."""
+    from app.services.object_identifier import detection_prefs, object_identifier
+    all_classes = object_identifier.get_all_class_names() if settings.ENABLE_OBJECT_IDENTIFICATION else []
+    return {
+        "prefs": detection_prefs.to_dict(),
+        "available_classes": all_classes,
+        "object_identification_enabled": settings.ENABLE_OBJECT_IDENTIFICATION,
+    }
+
+
+class DetectionPrefsUpdate(BaseModel):
+    enabled: list[str] | None = None
+    high_alert: list[str] | None = None
+    announce: list[str] | None = None
+
+
+@router.put("/detection-prefs")
+def update_detection_prefs(data: DetectionPrefsUpdate):
+    """Update detection preferences."""
+    from app.services.object_identifier import detection_prefs
+    detection_prefs.update(
+        enabled=data.enabled,
+        high_alert=data.high_alert,
+        announce=data.announce,
+    )
+    logger.info(f"Detection prefs updated: {len(detection_prefs.enabled_labels)} enabled, "
+                f"{len(detection_prefs.announce_labels)} announced, "
+                f"{len(detection_prefs.high_alert_labels)} high-alert")
+    return {"ok": True, "prefs": detection_prefs.to_dict()}

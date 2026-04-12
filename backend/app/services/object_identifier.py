@@ -5,9 +5,15 @@ This service identifies WHAT objects are in the scene — not WHO is there.
 
 Used by the clip analyzer to detect what a person is carrying or what changed in the scene.
 Never modifies the core detection pipeline.
+
+Detection preferences are user-configurable at runtime via API.
 """
 
+import json
 import logging
+import threading
+from pathlib import Path
+
 import numpy as np
 from ultralytics import YOLO
 
@@ -15,8 +21,8 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Classes relevant to surveillance — subset of 601 for focused detection
-SURVEILLANCE_CLASSES = {
+# Default classes relevant to surveillance — subset of 601
+DEFAULT_SURVEILLANCE_CLASSES = {
     15: "Backpack",
     57: "Bottle",
     62: "Box",
@@ -48,7 +54,74 @@ SURVEILLANCE_CLASSES = {
 }
 
 # High-alert objects — flag these prominently
-HIGH_ALERT_OBJECTS = {"Handgun", "Knife", "Shotgun", "Weapon"}
+DEFAULT_HIGH_ALERT = {"Handgun", "Knife", "Shotgun", "Weapon"}
+
+# Preferences file path
+_PREFS_PATH = Path("detection_prefs.json")
+
+
+class DetectionPreferences:
+    """User-configurable detection preferences. Persisted to disk as JSON."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.enabled_labels: set[str] = set(DEFAULT_SURVEILLANCE_CLASSES.values())
+        self.high_alert_labels: set[str] = set(DEFAULT_HIGH_ALERT)
+        self.announce_labels: set[str] = set(DEFAULT_SURVEILLANCE_CLASSES.values()) - {"Person", "Door", "Shelf", "Clothing"}
+        self._load()
+
+    def _load(self):
+        if _PREFS_PATH.exists():
+            try:
+                data = json.loads(_PREFS_PATH.read_text())
+                self.enabled_labels = set(data.get("enabled", self.enabled_labels))
+                self.high_alert_labels = set(data.get("high_alert", self.high_alert_labels))
+                self.announce_labels = set(data.get("announce", self.announce_labels))
+                logger.info(f"Detection preferences loaded: {len(self.enabled_labels)} objects enabled, "
+                            f"{len(self.announce_labels)} announced")
+            except Exception as e:
+                logger.warning(f"Failed to load detection prefs: {e}")
+
+    def save(self):
+        with self._lock:
+            data = {
+                "enabled": sorted(self.enabled_labels),
+                "high_alert": sorted(self.high_alert_labels),
+                "announce": sorted(self.announce_labels),
+            }
+            _PREFS_PATH.write_text(json.dumps(data, indent=2))
+
+    def is_enabled(self, label: str) -> bool:
+        return label in self.enabled_labels
+
+    def is_high_alert(self, label: str) -> bool:
+        return label in self.high_alert_labels
+
+    def should_announce(self, label: str) -> bool:
+        return label in self.announce_labels
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled": sorted(self.enabled_labels),
+            "high_alert": sorted(self.high_alert_labels),
+            "announce": sorted(self.announce_labels),
+        }
+
+    def update(self, enabled: list[str] | None = None,
+               high_alert: list[str] | None = None,
+               announce: list[str] | None = None):
+        with self._lock:
+            if enabled is not None:
+                self.enabled_labels = set(enabled)
+            if high_alert is not None:
+                self.high_alert_labels = set(high_alert)
+            if announce is not None:
+                self.announce_labels = set(announce)
+        self.save()
+
+
+# Singleton
+detection_prefs = DetectionPreferences()
 
 
 class ObjectIdentifier:
@@ -57,6 +130,7 @@ class ObjectIdentifier:
     def __init__(self):
         self.model: YOLO | None = None
         self._loaded = False
+        self._all_class_names: dict[int, str] = {}  # populated after model load
 
     def load(self):
         if self._loaded:
@@ -65,13 +139,20 @@ class ObjectIdentifier:
             return
         logger.info("Loading YOLOv8 Open Images V7 model (601 classes)...")
         self.model = YOLO("yolov8n-oiv7.pt")
+        self._all_class_names = dict(self.model.names)
         self._loaded = True
         logger.info(f"Object identification model loaded ({len(self.model.names)} classes)")
+
+    def get_all_class_names(self) -> list[str]:
+        """Return all 601 available class names."""
+        if not self._loaded:
+            self.load()
+        return sorted(set(self._all_class_names.values()))
 
     def identify(self, frame: np.ndarray, confidence: float = 0.3) -> list[dict]:
         """Identify objects in a frame. Returns list of detected objects.
 
-        Only returns surveillance-relevant objects (not all 601 classes).
+        Only returns objects that are enabled in detection preferences.
         """
         if not self._loaded or not self.model:
             self.load()
@@ -86,20 +167,23 @@ class ObjectIdentifier:
                 continue
             for box in result.boxes:
                 cls_id = int(box.cls[0])
-                # Only report surveillance-relevant classes
-                if cls_id not in SURVEILLANCE_CLASSES:
+                label = self._all_class_names.get(cls_id)
+                if not label:
+                    continue
+                # Only report objects the user has enabled
+                if not detection_prefs.is_enabled(label):
                     continue
 
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf = float(box.conf[0])
-                label = SURVEILLANCE_CLASSES[cls_id]
 
                 objects.append({
                     "label": label,
                     "confidence": round(conf, 3),
                     "bbox": [round(x1), round(y1), round(x2), round(y2)],
                     "center": [round((x1 + x2) / 2), round((y1 + y2) / 2)],
-                    "high_alert": label in HIGH_ALERT_OBJECTS,
+                    "high_alert": detection_prefs.is_high_alert(label),
+                    "announce": detection_prefs.should_announce(label),
                 })
 
         # Sort by confidence descending
