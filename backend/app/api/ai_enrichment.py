@@ -85,9 +85,61 @@ def get_enrichment(event_id: int, db: Session = Depends(get_db)):
 def ai_status():
     """Check if AI narrator is enabled and which mode is active."""
     import os
+    from app.services.activity_baseline import activity_baseline
     has_key = bool(settings.ANTHROPIC_API_KEY or os.environ.get("OPENCAM_ANTHROPIC_API_KEY"))
     return {
         "enabled": settings.ENABLE_AI_NARRATOR,
         "mode": "claude" if has_key else "rules",
         "feature": "event_narration",
+        "clip_recording": settings.ENABLE_CLIP_RECORDING,
+        "object_identification": settings.ENABLE_OBJECT_IDENTIFICATION,
+        "baseline_learned": activity_baseline._built,
+        "baseline_last_rebuild": activity_baseline._last_rebuild.isoformat() if activity_baseline._last_rebuild else None,
+    }
+
+
+@router.post("/baseline/rebuild")
+def rebuild_baseline(db: Session = Depends(get_db)):
+    """Force rebuild the activity baseline from historical events."""
+    _check_enabled()
+    from app.services.activity_baseline import activity_baseline
+    activity_baseline.rebuild(db)
+    return {
+        "ok": True,
+        "last_rebuild": activity_baseline._last_rebuild.isoformat() if activity_baseline._last_rebuild else None,
+    }
+
+
+@router.get("/baseline/{camera_id}")
+def get_baseline(camera_id: int):
+    """Get the learned baseline for a camera at the current time."""
+    _check_enabled()
+    from app.services.activity_baseline import activity_baseline
+    from datetime import datetime
+
+    now = datetime.now()
+    bl = activity_baseline.get_baseline(camera_id, now)
+    dow_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][now.weekday()]
+
+    if not bl:
+        return {
+            "camera_id": camera_id,
+            "day": dow_name,
+            "hour": now.hour,
+            "has_data": False,
+            "message": "No baseline data for this camera at this time.",
+        }
+
+    return {
+        "camera_id": camera_id,
+        "day": dow_name,
+        "hour": now.hour,
+        "has_data": True,
+        "sample_days": bl.sample_days,
+        "avg_events_per_hour": round(bl.event_count, 1),
+        "avg_persons": round(bl.person_count, 1),
+        "avg_known_faces": round(bl.face_known_count, 1),
+        "avg_unknown_faces": round(bl.face_unknown_count, 1),
+        "avg_zone_entries": round(bl.enter_count, 1),
+        "avg_confidence": round(bl.avg_confidence, 3),
     }

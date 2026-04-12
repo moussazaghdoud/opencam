@@ -43,6 +43,12 @@ async def lifespan(app: FastAPI):
     # Load known faces
     face_recognizer.load_known_faces()
 
+    # Build activity baseline from historical events
+    if settings.ENABLE_AI_NARRATOR:
+        from app.services.activity_baseline import activity_baseline
+        activity_baseline.rebuild()
+        logger.info("Activity baseline built from historical events")
+
     # Start processing all enabled cameras
     await stream_manager.start_all()
     logger.info("All camera streams started")

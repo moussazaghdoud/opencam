@@ -173,7 +173,8 @@ def _build_activity_context(db: Session, event: Event, camera_id: int) -> dict:
 
 
 def _build_user_prompt(event: Event, camera_name: str, camera_location: str,
-                       activity: dict, clip_analysis: dict | None = None) -> str:
+                       activity: dict, clip_analysis: dict | None = None,
+                       anomaly: dict | None = None) -> str:
     hour = event.created_at.hour if event.created_at else 0
     confidence_pct = round((event.confidence or 0) * 100, 1)
     time_str = event.created_at.isoformat() if event.created_at else "unknown"
@@ -275,6 +276,16 @@ def _build_user_prompt(event: Event, camera_name: str, camera_location: str,
             f"{objects_str}"
         )
 
+    # Add anomaly baseline data
+    if anomaly and anomaly.get("baseline_summary"):
+        prompt += f"\n\n--- LEARNED ACTIVITY BASELINE ---\n"
+        prompt += f"{anomaly['baseline_summary']}\n"
+        prompt += f"Anomaly score: {anomaly['anomaly_score']}\n"
+        if anomaly["reasons"]:
+            prompt += f"Anomaly reasons:\n"
+            for r in anomaly["reasons"]:
+                prompt += f"  - {r}\n"
+
     return prompt
 
 
@@ -291,7 +302,8 @@ _EVENT_TYPE_LABELS = {
 
 
 def _rule_based_narration(event: Event, camera_name: str,
-                          activity: dict, clip_analysis: dict | None = None) -> dict:
+                          activity: dict, clip_analysis: dict | None = None,
+                          anomaly: dict | None = None) -> dict:
     """Generate narration using deterministic rules. Always works."""
 
     # --- Build narration text ---
@@ -408,6 +420,15 @@ def _rule_based_narration(event: Event, camera_name: str,
             score += 0.2
             reasons.append(f"object(s) missing from scene: {', '.join(labels)}")
 
+    # Anomaly baseline — learned patterns
+    if anomaly and anomaly.get("anomaly_score", 0) > 0:
+        score += anomaly["anomaly_score"] * 0.5  # weight baseline at 50%
+        reasons.extend(anomaly.get("reasons", []))
+
+    # Add baseline context to narration
+    if anomaly and anomaly.get("baseline_summary") and "Insufficient" not in anomaly["baseline_summary"]:
+        narration += " " + anomaly["baseline_summary"]
+
     score = min(score, 1.0)
 
     if score >= 0.7:
@@ -435,13 +456,14 @@ def _rule_based_narration(event: Event, camera_name: str,
 # ---------------------------------------------------------------------------
 
 async def _claude_narration(event: Event, camera_name: str, camera_location: str,
-                            activity: dict, clip_analysis: dict | None = None) -> dict | None:
+                            activity: dict, clip_analysis: dict | None = None,
+                            anomaly: dict | None = None) -> dict | None:
     """Call Claude API. Returns None on any failure (caller falls back to rules)."""
     api_key = settings.ANTHROPIC_API_KEY or os.environ.get("OPENCAM_ANTHROPIC_API_KEY")
     if not api_key:
         return None
 
-    user_prompt = _build_user_prompt(event, camera_name, camera_location, activity, clip_analysis)
+    user_prompt = _build_user_prompt(event, camera_name, camera_location, activity, clip_analysis, anomaly)
 
     try:
         async with httpx.AsyncClient(verify=False, timeout=10) as client:
@@ -530,10 +552,17 @@ async def narrate_event(event_id: int, db: Session) -> dict:
         except Exception as e:
             logger.warning(f"Clip analysis failed for event {event_id}: {e}")
 
+    # Score anomaly against learned baseline (pure statistics, no LLM)
+    from app.services.activity_baseline import activity_baseline
+    anomaly = activity_baseline.score_anomaly(event.camera_id, event)
+    if anomaly["is_anomalous"]:
+        logger.info(f"Anomaly detected for event {event_id}: score={anomaly['anomaly_score']}, "
+                     f"reasons={anomaly['reasons']}")
+
     # Try Claude first, fall back to rules
-    result = await _claude_narration(event, camera_name, camera_location, activity, clip_analysis)
+    result = await _claude_narration(event, camera_name, camera_location, activity, clip_analysis, anomaly)
     if result is None:
-        result = _rule_based_narration(event, camera_name, activity, clip_analysis)
+        result = _rule_based_narration(event, camera_name, activity, clip_analysis, anomaly)
 
     result["event_id"] = event_id
     return result
