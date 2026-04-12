@@ -241,6 +241,27 @@ def _build_user_prompt(event: Event, camera_name: str, camera_location: str,
                 f"Description: {carrying['description']}"
             )
 
+        objects = clip_analysis.get("objects_detected", {})
+        objects_str = ""
+        if objects.get("summary"):
+            objects_str = f"\n\n--- OBJECT IDENTIFICATION (YOLO Open Images, 601 classes) ---\n"
+            if objects.get("on_person_entry"):
+                labels = [o["label"] for o in objects["on_person_entry"]]
+                objects_str += f"Objects on person at ENTRY: {', '.join(labels)}\n"
+            if objects.get("on_person_exit"):
+                labels = [o["label"] for o in objects["on_person_exit"]]
+                objects_str += f"Objects on person at EXIT: {', '.join(labels)}\n"
+            if objects.get("new_objects_on_person"):
+                labels = [o["label"] for o in objects["new_objects_on_person"]]
+                objects_str += f"NEW objects on person at exit (not at entry): {', '.join(labels)}\n"
+            if objects.get("missing_objects_from_scene"):
+                labels = [o["label"] for o in objects["missing_objects_from_scene"]]
+                objects_str += f"Objects MISSING from scene: {', '.join(labels)}\n"
+            if objects.get("high_alert"):
+                labels = [o["label"] for o in objects["high_alert"]]
+                objects_str += f"HIGH ALERT OBJECTS: {', '.join(labels)}\n"
+            objects_str += f"Summary: {objects['summary']}"
+
         prompt += (
             f"\n\n--- VIDEO CLIP ANALYSIS (local CV, {clip_analysis['duration_seconds']}s clip) ---\n"
             f"Person visible for: {clip_analysis['person_present_seconds']}s out of {clip_analysis['duration_seconds']}s\n"
@@ -251,6 +272,7 @@ def _build_user_prompt(event: Event, camera_name: str, camera_location: str,
             f"Movement summary: {clip_analysis['movement_summary']}"
             f"{scene_str}"
             f"{carrying_str}"
+            f"{objects_str}"
         )
 
     return prompt
@@ -370,6 +392,21 @@ def _rule_based_narration(event: Event, camera_name: str,
             elif carrying["change_type"] == "put_down_object":
                 score += 0.1
                 reasons.append("person appears to have put down an object")
+
+        # Object identification — what the person is carrying / what's in scene
+        objects = clip_analysis.get("objects_detected", {})
+        if objects.get("high_alert"):
+            labels = [o["label"] for o in objects["high_alert"]]
+            score += 0.5
+            reasons.append(f"DANGEROUS OBJECT DETECTED: {', '.join(labels)}")
+        if objects.get("new_objects_on_person"):
+            labels = [o["label"] for o in objects["new_objects_on_person"]]
+            score += 0.25
+            reasons.append(f"person acquired object(s): {', '.join(labels)}")
+        if objects.get("missing_objects_from_scene"):
+            labels = [o["label"] for o in objects["missing_objects_from_scene"]]
+            score += 0.2
+            reasons.append(f"object(s) missing from scene: {', '.join(labels)}")
 
     score = min(score, 1.0)
 

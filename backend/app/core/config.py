@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # Clip recording — save short video clips around events for activity analysis
     ENABLE_CLIP_RECORDING: bool = False
 
+    # Object identification — second YOLO pass with Open Images V7 (601 classes)
+    # Detects what objects are in the scene (backpack, knife, pillow, etc.)
+    ENABLE_OBJECT_IDENTIFICATION: bool = False
+
     class Config:
         env_file = ".env"
         env_prefix = "OPENCAM_"

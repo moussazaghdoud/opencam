@@ -3,8 +3,10 @@
 Runs entirely on CPU using OpenCV + YOLO. No LLM calls.
 Output is a JSON dict of facts that can be fed into the AI narrator prompt.
 
-Includes scene change detection: compares frames before a person appeared
-with frames after they left to detect if objects were added or removed.
+Includes:
+- Scene change detection (before vs after person)
+- Person silhouette/carrying change detection
+- Object identification (YOLO Open Images V7 — 601 classes)
 """
 
 import logging
@@ -12,6 +14,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+from app.core.config import settings
 
 from app.services.detector import detector
 
@@ -145,10 +149,14 @@ def analyze_clip(clip_path: str) -> dict | None:
         # Both detected — combine descriptions
         scene_change["description"] += " " + carrying_change["description"]
 
+    # --- Object identification (Open Images V7, 601 classes) ---
+    objects_detected = _identify_objects_in_clip(all_frames, person_detections)
+
     # --- Build movement summary ---
     movement_summary = _build_movement_summary(
         frames_with, duration, person_present_seconds,
-        entry_dir, exit_dir, bbox_trend, person_count_max, scene_change
+        entry_dir, exit_dir, bbox_trend, person_count_max,
+        scene_change, objects_detected
     )
 
     return {
@@ -161,6 +169,7 @@ def analyze_clip(clip_path: str) -> dict | None:
         "bbox_size_trend": bbox_trend,
         "scene_change": scene_change,
         "carrying_change": carrying_change,
+        "objects_detected": objects_detected,
         "movement_summary": movement_summary,
         "frame_count": len(person_detections),
     }
@@ -432,6 +441,109 @@ def _person_pixel_density(frames: list[np.ndarray],
     return sum(densities) / len(densities) if densities else 0.0
 
 
+# ---------------------------------------------------------------------------
+# Object identification — uses Open Images V7 YOLO (601 classes)
+# ---------------------------------------------------------------------------
+
+def _identify_objects_in_clip(frames: list[np.ndarray],
+                              detections: list[dict]) -> dict:
+    """Identify objects in key frames of the clip.
+
+    Runs on 3 frames: first with person, middle, last with person.
+    Identifies objects near/on the person AND in the wider scene.
+
+    Returns:
+      - on_person_entry: objects near person when they first appeared
+      - on_person_exit: objects near person when they last appeared
+      - in_scene: objects visible in scene frames
+      - new_objects_on_person: objects on person at exit but not at entry
+      - missing_objects_from_scene: objects in scene at start but not end
+      - high_alert: any weapons/dangerous objects detected
+      - summary: human-readable description
+    """
+    result = {
+        "on_person_entry": [],
+        "on_person_exit": [],
+        "in_scene": [],
+        "new_objects_on_person": [],
+        "missing_objects_from_scene": [],
+        "high_alert": [],
+        "summary": "",
+    }
+
+    if not settings.ENABLE_OBJECT_IDENTIFICATION:
+        return result
+
+    from app.services.object_identifier import object_identifier
+
+    frames_with = [d for d in detections if d["count"] > 0 and d["bboxes"]]
+    if not frames_with:
+        return result
+
+    # --- Identify objects on person at entry and exit ---
+    first_det = frames_with[0]
+    last_det = frames_with[-1]
+
+    if first_det["frame_idx"] < len(frames) and first_det["bboxes"]:
+        entry_frame = frames[first_det["frame_idx"]]
+        for bbox in first_det["bboxes"]:
+            objs = object_identifier.identify_in_region(entry_frame, [int(v) for v in bbox])
+            result["on_person_entry"].extend(objs)
+
+    if last_det["frame_idx"] < len(frames) and last_det["bboxes"]:
+        exit_frame = frames[last_det["frame_idx"]]
+        for bbox in last_det["bboxes"]:
+            objs = object_identifier.identify_in_region(exit_frame, [int(v) for v in bbox])
+            result["on_person_exit"].extend(objs)
+
+    # --- Identify objects in scene (full frame, first and last frames) ---
+    if frames:
+        scene_objs_start = object_identifier.identify(frames[0])
+        scene_objs_end = object_identifier.identify(frames[-1])
+        result["in_scene"] = scene_objs_end
+
+        # Find objects that appeared on person at exit but weren't at entry
+        entry_labels = {o["label"] for o in result["on_person_entry"]}
+        result["new_objects_on_person"] = [
+            o for o in result["on_person_exit"]
+            if o["label"] not in entry_labels
+        ]
+
+        # Find objects missing from scene (were there at start, gone at end)
+        start_labels = {o["label"] for o in scene_objs_start}
+        end_labels = {o["label"] for o in scene_objs_end}
+        missing = start_labels - end_labels
+        result["missing_objects_from_scene"] = [
+            o for o in scene_objs_start if o["label"] in missing
+        ]
+
+    # --- High alert check ---
+    all_objs = result["on_person_entry"] + result["on_person_exit"] + result["in_scene"]
+    result["high_alert"] = [o for o in all_objs if o.get("high_alert")]
+
+    # --- Build summary ---
+    parts = []
+    if result["new_objects_on_person"]:
+        labels = sorted(set(o["label"] for o in result["new_objects_on_person"]))
+        parts.append(f"Person has new object(s) at exit: {', '.join(labels)}.")
+
+    if result["missing_objects_from_scene"]:
+        labels = sorted(set(o["label"] for o in result["missing_objects_from_scene"]))
+        parts.append(f"Object(s) missing from scene: {', '.join(labels)}.")
+
+    if result["high_alert"]:
+        labels = sorted(set(o["label"] for o in result["high_alert"]))
+        parts.append(f"HIGH ALERT — dangerous object(s) detected: {', '.join(labels)}!")
+
+    if result["on_person_exit"] and not result["new_objects_on_person"]:
+        labels = sorted(set(o["label"] for o in result["on_person_exit"]))
+        parts.append(f"Person carrying: {', '.join(labels)}.")
+
+    result["summary"] = " ".join(parts) if parts else "No notable objects identified."
+
+    return result
+
+
 def _direction_from_position(cx: float, cy: float) -> str:
     """Infer which edge the person is near based on normalized center position."""
     margin = 0.25
@@ -449,7 +561,8 @@ def _direction_from_position(cx: float, cy: float) -> str:
 def _build_movement_summary(frames_with: list, duration: float,
                             present_seconds: float, entry: str, exit_dir: str,
                             trend: str, max_count: int,
-                            scene_change: dict | None = None) -> str:
+                            scene_change: dict | None = None,
+                            objects_detected: dict | None = None) -> str:
     """Build a short factual movement description."""
     parts = []
 
@@ -478,5 +591,9 @@ def _build_movement_summary(frames_with: list, duration: float,
     # Scene change (object added/removed)
     if scene_change and scene_change.get("changed"):
         parts.append(scene_change["description"])
+
+    # Object identification
+    if objects_detected and objects_detected.get("summary"):
+        parts.append(objects_detected["summary"])
 
     return " ".join(parts)
