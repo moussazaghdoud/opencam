@@ -47,12 +47,32 @@ async def register_face(
             content = await photo.read()
             f.write(content)
     elif camera_id:
-        # Capture from camera
-        import cv2
-        frame = stream_manager.get_frame(camera_id)
-        if frame is None:
+        # Capture frames and keep only those where a face is detected
+        import asyncio, cv2
+        frames = []
+        face_frames = []
+        for _ in range(15):
+            f = stream_manager.get_fresh_frame(camera_id)
+            if f is not None:
+                frames.append(f)
+                # Only keep frames where the detector actually finds a face
+                detected = []
+                if face_recognizer.det_session:
+                    try:
+                        detected = face_recognizer._detect_faces_retinaface(f, threshold=0.5)
+                    except Exception:
+                        pass
+                if not detected:
+                    detected = face_recognizer._detect_faces_haar(f)
+                if detected:
+                    face_frames.append(f)
+            await asyncio.sleep(0.1)
+        if not frames:
             raise HTTPException(400, "No frame available from camera")
-        cv2.imwrite(photo_path, frame)
+        # Use face_frames if we got any, otherwise fall back to all frames
+        registration_frames = face_frames if face_frames else frames
+        # Save the middle frame as the profile photo
+        cv2.imwrite(photo_path, registration_frames[len(registration_frames) // 2])
     else:
         raise HTTPException(400, "Provide either a photo or camera_id")
 
@@ -62,8 +82,12 @@ async def register_face(
     db.commit()
     db.refresh(face)
 
-    # Register in recognizer
-    face_recognizer.add_face(name, photo_path, role)
+    # Register with only frames that had a detected face (avoids polluting embeddings with non-face frames)
+    if camera_id:
+        extra = registration_frames[1:] if len(registration_frames) > 1 else []
+    else:
+        extra = []
+    face_recognizer.add_face(name, photo_path, role, extra_frames=extra)
 
     return {"id": face.id, "name": name, "role": role, "photo_path": photo_path}
 
@@ -99,11 +123,21 @@ def delete_face(face_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/recognize")
-def recognize_from_camera(camera_id: int, db: Session = Depends(get_db)):
-    """Run face recognition on current frame from a camera."""
+async def recognize_from_camera(camera_id: int, db: Session = Depends(get_db)):
+    """Run face recognition — tries up to 5 frames to find the best pose."""
+    import asyncio
+
     frame = stream_manager.get_frame(camera_id)
     if frame is None:
         raise HTTPException(400, "No frame available")
 
-    results = face_recognizer.recognize(frame)
+    results = []
+    for _ in range(5):
+        frame = stream_manager.get_frame(camera_id)
+        if frame is not None:
+            results = face_recognizer.recognize(frame)
+            if results:
+                break
+        await asyncio.sleep(0.15)
+
     return {"faces": results}

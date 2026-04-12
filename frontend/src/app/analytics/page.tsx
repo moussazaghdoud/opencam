@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { getCameras } from "@/lib/api";
 import type { Camera } from "@/lib/api";
+import CameraFeed from "@/components/CameraFeed";
 import {
   BarChart3,
   Eye,
@@ -90,15 +91,13 @@ export default function AnalyticsPage() {
 
   const selectedCameraObj = cameras.find((c) => c.id === selectedCamera);
 
-  const heatmapUrl =
-    selectedCamera !== null
-      ? `${API_BASE}/api/ops/heatmap/${selectedCamera}?t=${refreshKey}`
-      : null;
-
-  const snapshotUrl =
-    selectedCamera !== null
-      ? `${API_BASE}/api/cameras/${selectedCamera}/snapshot?t=${refreshKey}`
-      : null;
+  // Sync heatmap overlay toggle with backend whenever it changes or camera changes
+  useEffect(() => {
+    if (selectedCamera === null) return;
+    fetch(`${API_BASE}/api/heatmap-overlay/${selectedCamera}?enabled=${showHeatmap}`, {
+      method: "POST",
+    }).catch(() => {});
+  }, [showHeatmap, selectedCamera]);
 
   if (loading) {
     return (
@@ -289,53 +288,24 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        <div className="relative bg-black aspect-video">
-          {selectedCamera !== null ? (
+        <div className="relative bg-black">
+          {selectedCamera !== null && selectedCameraObj ? (
             <>
-              {/* Camera snapshot as background */}
-              {snapshotUrl && (
-                <img
-                  key={`snap-${refreshKey}`}
-                  src={snapshotUrl}
-                  alt="Camera view"
-                  className="absolute inset-0 w-full h-full object-contain"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).style.display = "none";
-                  }}
-                />
-              )}
+              <CameraFeed cameraId={selectedCameraObj.id} cameraName={selectedCameraObj.name} />
 
-              {/* Heatmap overlay */}
-              {showHeatmap && heatmapUrl && (
-                <img
-                  key={`heat-${refreshKey}`}
-                  src={heatmapUrl}
-                  alt="Heatmap overlay"
-                  className="absolute inset-0 w-full h-full object-contain opacity-60"
-                  style={{ mixBlendMode: "screen" }}
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).style.display = "none";
-                  }}
-                />
-              )}
-
-              {/* No data placeholder */}
+              {/* No data placeholder overlay */}
               {stats && stats.total_detections === 0 && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center">
-                    <BarChart3 className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
-                    <p className="text-zinc-500 text-sm">
-                      No detection data yet
-                    </p>
-                    <p className="text-zinc-600 text-xs mt-1">
-                      Heatmap will build up as people are detected
+                <div className="absolute inset-0 flex items-end justify-start p-4 pointer-events-none">
+                  <div className="bg-black/60 rounded-lg px-3 py-2 text-center">
+                    <p className="text-zinc-400 text-xs">
+                      No heatmap data yet — heatmap builds as people are detected
                     </p>
                   </div>
                 </div>
               )}
             </>
           ) : (
-            <div className="absolute inset-0 flex items-center justify-center">
+            <div className="aspect-video flex items-center justify-center">
               <div className="text-center">
                 <MapPin className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
                 <p className="text-zinc-500 text-sm">

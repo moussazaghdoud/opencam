@@ -328,7 +328,8 @@ class ObjectTracker:
             self._crossed[line_id].clear()
 
     def get_active_tracks(self) -> int:
-        return len(self._objects)
+        """Return count of currently visible objects (not disappeared)."""
+        return sum(1 for tid in self._objects if self._disappeared.get(tid, 0) == 0)
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { getCameras, getWsUrl } from "@/lib/api";
+import { getCameras, getWsUrl, ptzControl } from "@/lib/api";
 import type { Camera } from "@/lib/api";
 import {
   MonitorPlay,
@@ -16,6 +16,13 @@ import {
   EyeOff,
   Eye,
   Flame,
+  ChevronUp,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ZoomIn,
+  ZoomOut,
+  Move,
 } from "lucide-react";
 
 type GridSize = "1x1" | "2x2" | "3x3" | "4x4";
@@ -164,6 +171,56 @@ function LiveCameraCell({
   );
 }
 
+function PTZControls({ cameraId, isRtsp }: { cameraId: number; isRtsp: boolean }) {
+  if (!isRtsp) return null;
+
+  const send = (op: string) => ptzControl(cameraId, op).catch(() => {});
+  const stop = () => send("Stop");
+
+  const btnClass =
+    "p-2.5 rounded-lg bg-[#27272a] hover:bg-[#3f3f46] text-zinc-300 hover:text-white transition-all duration-150 active:scale-90";
+
+  return (
+    <div className="flex flex-col items-center gap-3 p-4 bg-[#111113] border border-[#27272a] rounded-xl">
+      <div className="flex items-center gap-1.5 mb-1">
+        <Move className="w-3.5 h-3.5 text-zinc-500" />
+        <span className="text-xs text-zinc-500 font-medium uppercase tracking-wider">PTZ Control</span>
+      </div>
+
+      {/* D-pad */}
+      <div className="grid grid-cols-3 gap-1.5">
+        <div />
+        <button className={btnClass} onMouseDown={() => send("Up")} onMouseUp={stop} onMouseLeave={stop}>
+          <ChevronUp className="w-5 h-5" />
+        </button>
+        <div />
+        <button className={btnClass} onMouseDown={() => send("Left")} onMouseUp={stop} onMouseLeave={stop}>
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+        <div className="w-10 h-10" />
+        <button className={btnClass} onMouseDown={() => send("Right")} onMouseUp={stop} onMouseLeave={stop}>
+          <ChevronRight className="w-5 h-5" />
+        </button>
+        <div />
+        <button className={btnClass} onMouseDown={() => send("Down")} onMouseUp={stop} onMouseLeave={stop}>
+          <ChevronDown className="w-5 h-5" />
+        </button>
+        <div />
+      </div>
+
+      {/* Zoom */}
+      <div className="flex gap-2 mt-1">
+        <button className={btnClass} onMouseDown={() => send("ZoomInc")} onMouseUp={stop} onMouseLeave={stop}>
+          <ZoomIn className="w-5 h-5" />
+        </button>
+        <button className={btnClass} onMouseDown={() => send("ZoomDec")} onMouseUp={stop} onMouseLeave={stop}>
+          <ZoomOut className="w-5 h-5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ExpandedCameraView({
   camera,
   onBack,
@@ -174,6 +231,7 @@ function ExpandedCameraView({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [connected, setConnected] = useState(false);
   const [detectionCount, setDetectionCount] = useState(0);
+  const isRtsp = camera.rtsp_url?.startsWith("rtsp://") ?? false;
 
   useEffect(() => {
     if (camera.status !== "online") return;
@@ -257,27 +315,32 @@ function ExpandedCameraView({
         </button>
       </div>
 
-      {/* Full-screen video */}
-      <div className="flex-1 flex items-center justify-center bg-black">
-        {camera.status !== "online" ? (
-          <div className="flex flex-col items-center gap-3">
-            <WifiOff className="w-16 h-16 text-zinc-700" />
-            <span className="text-zinc-500">Camera Offline</span>
-          </div>
-        ) : (
-          <canvas
-            ref={canvasRef}
-            className="max-w-full max-h-full object-contain"
-          />
-        )}
-        {camera.status === "online" && !connected && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse" />
-              <span className="text-zinc-400">Connecting...</span>
+      {/* Full-screen video + PTZ */}
+      <div className="flex-1 flex items-center justify-center bg-black gap-4 p-4">
+        <div className="flex-1 flex items-center justify-center">
+          {camera.status !== "online" ? (
+            <div className="flex flex-col items-center gap-3">
+              <WifiOff className="w-16 h-16 text-zinc-700" />
+              <span className="text-zinc-500">Camera Offline</span>
             </div>
-          </div>
-        )}
+          ) : (
+            <canvas
+              ref={canvasRef}
+              className="max-w-full max-h-full object-contain"
+            />
+          )}
+          {camera.status === "online" && !connected && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse" />
+                <span className="text-zinc-400">Connecting...</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* PTZ panel on the right */}
+        <PTZControls cameraId={camera.id} isRtsp={isRtsp} />
       </div>
     </div>
   );

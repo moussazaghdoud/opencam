@@ -10,6 +10,73 @@ interface CameraFeedProps {
   className?: string;
 }
 
+// Shared AudioContext — initialized on first user interaction to satisfy browser autoplay policy
+let _audioCtx: AudioContext | null = null;
+let _audioAvailable = typeof window !== "undefined" && typeof window.AudioContext !== "undefined";
+
+function getAudioCtx(): AudioContext | null {
+  if (!_audioAvailable) return null;
+  try {
+    if (!_audioCtx) {
+      _audioCtx = new AudioContext();
+    }
+    if (_audioCtx.state === "suspended") {
+      _audioCtx.resume();
+    }
+    return _audioCtx;
+  } catch {
+    _audioAvailable = false;
+    return null;
+  }
+}
+
+// Initialize audio on first user click/touch anywhere on the page
+if (typeof window !== "undefined" && _audioAvailable) {
+  const unlock = () => {
+    getAudioCtx();
+    window.removeEventListener("click", unlock);
+    window.removeEventListener("touchstart", unlock);
+  };
+  window.addEventListener("click", unlock, { once: true });
+  window.addEventListener("touchstart", unlock, { once: true });
+}
+
+// Per-name cooldown: don't announce same person more than once per 30s (shared across all feeds)
+const _announcedAt: Record<string, number> = {};
+
+function playBeep() {
+  try {
+    const ctx = getAudioCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    gain.gain.value = 0.3;
+    osc.start();
+    osc.stop(ctx.currentTime + 0.15);
+  } catch { /* audio not available */ }
+}
+
+function announce(key: string, message: string) {
+  const now = Date.now();
+  if (_announcedAt[key] && now - _announcedAt[key] < 30_000) return;
+  _announcedAt[key] = now;
+
+  playBeep();
+
+  if (!("speechSynthesis" in window)) return;
+  setTimeout(() => {
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(message);
+    utt.lang = "en-US";
+    utt.rate = 0.95;
+    utt.pitch = 1.05;
+    window.speechSynthesis.speak(utt);
+  }, 200);
+}
+
 export default function CameraFeed({ cameraId, cameraName, className = "" }: CameraFeedProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [connected, setConnected] = useState(false);
@@ -33,6 +100,20 @@ export default function CameraFeed({ cameraId, cameraName, className = "" }: Cam
         try {
           const data = JSON.parse(msg.data);
           setDetectionCount(data.detections?.length || 0);
+
+          // Announce known faces by name
+          if (Array.isArray(data.faces)) {
+            for (const face of data.faces) {
+              if (face.known && face.name) {
+                announce(`face_${face.name}`, `Hello ${face.name}`);
+              }
+            }
+          }
+
+          // Announce safety jacket detection
+          if (data.safety_jacket_detected) {
+            announce("safety_jacket", "Security jacket detected");
+          }
 
           // Draw frame on canvas
           const canvas = canvasRef.current;

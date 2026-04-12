@@ -7,8 +7,8 @@ import {
   deleteCamera,
   startCamera,
   stopCamera,
-  getSnapshotUrl,
 } from "@/lib/api";
+import CameraFeed from "@/components/CameraFeed";
 import type { Camera } from "@/lib/api";
 import {
   Plus,
@@ -26,8 +26,6 @@ export default function CamerasPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ name: "", rtsp_url: "", location: "" });
   const [submitting, setSubmitting] = useState(false);
-  const [imgErrors, setImgErrors] = useState<Record<number, boolean>>({});
-
   const fetchCameras = useCallback(async () => {
     try {
       setCameras(await getCameras());
@@ -198,19 +196,14 @@ export default function CamerasPage() {
               key={cam.id}
               className="group bg-[#18181b] border border-[#27272a] rounded-xl p-5 flex items-center gap-5 hover:border-[#333] transition-all duration-200"
             >
-              {/* Thumbnail */}
-              <div className="w-[120px] h-[80px] rounded-lg bg-black flex-shrink-0 overflow-hidden flex items-center justify-center">
-                {cam.status === "online" && !imgErrors[cam.id] ? (
-                  <img
-                    src={getSnapshotUrl(cam.id)}
-                    alt={cam.name}
-                    className="w-full h-full object-cover"
-                    onError={() =>
-                      setImgErrors((prev) => ({ ...prev, [cam.id]: true }))
-                    }
-                  />
+              {/* Thumbnail — live WebSocket feed */}
+              <div className="w-[180px] flex-shrink-0 overflow-hidden rounded-lg">
+                {cam.status === "online" ? (
+                  <CameraFeed cameraId={cam.id} cameraName="" className="border-0 rounded-none" />
                 ) : (
-                  <CameraIcon className="w-8 h-8 text-zinc-700" />
+                  <div className="w-full h-[100px] bg-black flex items-center justify-center">
+                    <CameraIcon className="w-8 h-8 text-zinc-700" />
+                  </div>
                 )}
               </div>
 

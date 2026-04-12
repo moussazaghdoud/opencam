@@ -49,16 +49,11 @@ class HeatmapAccumulator:
         for det in person_dets:
             x1, y1, x2, y2 = det["bbox"]
 
-            # Bottom half of bbox (where feet / standing area is)
-            mid_y = (y1 + y2) / 2.0
-            foot_y1 = mid_y
-            foot_y2 = y2
-
-            # Map pixel coords to grid coords
+            # Map full bbox to grid coords (covers entire body including head)
             gx1 = int(x1 / frame_w * self._grid_w)
             gx2 = int(x2 / frame_w * self._grid_w)
-            gy1 = int(foot_y1 / frame_h * self._grid_h)
-            gy2 = int(foot_y2 / frame_h * self._grid_h)
+            gy1 = int(y1 / frame_h * self._grid_h)
+            gy2 = int(y2 / frame_h * self._grid_h)
 
             # Clamp to grid bounds
             gx1 = max(0, min(gx1, self._grid_w - 1))

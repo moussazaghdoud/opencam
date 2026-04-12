@@ -37,6 +37,23 @@ class Settings(BaseSettings):
     FRAME_SKIP: int = 3  # Process every Nth frame
     MAX_CAMERAS: int = 16
 
+    # Module toggles — disable heavy modules to save CPU
+    ENABLE_FACE_RECOGNITION: bool = True
+    ENABLE_PPE_DETECTION: bool = True
+    ENABLE_HEATMAP: bool = True
+
+    # Face recognition runs every N × FRAME_SKIP frames (higher = less CPU)
+    FACE_RECOGNITION_INTERVAL: int = 10
+
+    # Background worker queue size per camera (1 = drop old frames, keep newest)
+    WORKER_QUEUE_SIZE: int = 1
+
+    # AI Narrator — event narration + suspicion scoring (default OFF)
+    ENABLE_AI_NARRATOR: bool = False
+
+    # Clip recording — save short video clips around events for activity analysis
+    ENABLE_CLIP_RECORDING: bool = False
+
     class Config:
         env_file = ".env"
         env_prefix = "OPENCAM_"

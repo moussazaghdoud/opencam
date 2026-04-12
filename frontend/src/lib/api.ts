@@ -35,6 +35,11 @@ export const startCamera = (id: number) =>
   fetchAPI("/api/cameras/" + id + "/start", { method: "POST" });
 export const stopCamera = (id: number) =>
   fetchAPI("/api/cameras/" + id + "/stop", { method: "POST" });
+export const ptzControl = (id: number, op: string, speed: number = 5) =>
+  fetchAPI("/api/cameras/" + id + "/ptz", {
+    method: "POST",
+    body: JSON.stringify({ op, speed }),
+  });
 
 // Zone
 export interface Zone {
@@ -126,7 +131,7 @@ export const getWsUrl = (cameraId: number) => {
 };
 
 // Snapshot URL
-export const getSnapshotUrl = (cameraId: number) =>
-  `${API_BASE}/api/cameras/${cameraId}/snapshot`;
+export const getSnapshotUrl = (cameraId: number, width: number = 320, quality: number = 50, ts?: number) =>
+  `${API_BASE}/api/cameras/${cameraId}/snapshot?width=${width}&quality=${quality}${ts ? `&t=${ts}` : ""}`;
 export const getEventSnapshotUrl = (eventId: number) =>
   `${API_BASE}/api/events/${eventId}/snapshot`;

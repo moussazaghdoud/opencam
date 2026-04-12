@@ -8,6 +8,7 @@ import {
   getEventSnapshotUrl,
 } from "@/lib/api";
 import type { Event, Camera } from "@/lib/api";
+import AINarration from "@/components/AINarration";
 import {
   Bell,
   X,
@@ -409,6 +410,9 @@ export default function EventsPage() {
                   </span>
                 </div>
               </div>
+
+              {/* AI Narration — optional enrichment, renders nothing if disabled */}
+              <AINarration eventId={selectedEvent.id} />
 
               {/* Actions */}
               {!selectedEvent.acknowledged && (

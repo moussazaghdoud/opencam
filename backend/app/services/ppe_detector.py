@@ -1,6 +1,6 @@
-"""PPE Detection — checks if detected persons are wearing a safety jacket.
+"""PPE Detection — checks if detected persons are wearing a yellow safety jacket.
 
-Uses color analysis on the upper body region to detect white/high-vis jackets.
+Uses HSV color analysis on the upper body region to detect yellow/fluorescent high-vis jackets.
 Includes hysteresis to prevent flickering between states.
 """
 
@@ -17,13 +17,11 @@ _state_count: dict[int, int] = {}  # camera_id -> consecutive frames in current 
 _CONFIRM_FRAMES = 5  # Need N consistent readings before changing state
 
 
-def check_white_jacket(frame: np.ndarray, bbox: list[int], threshold: float = 0.20) -> dict:
-    """Check if a person is wearing a white jacket.
+def check_safety_jacket(frame: np.ndarray, bbox: list[int], threshold: float = 0.15) -> dict:
+    """Check if a person is wearing a yellow/fluorescent safety jacket.
 
-    Uses multiple methods for robustness:
-    1. HSV white/light pixel ratio
-    2. Average brightness of torso
-    3. Comparison to dark clothing baseline
+    Detects high-vis yellow/green jackets using HSV color range targeting
+    the fluorescent yellow-green spectrum typical of safety vests.
     """
     x1, y1, x2, y2 = bbox
     h, w = frame.shape[:2]
@@ -36,10 +34,9 @@ def check_white_jacket(frame: np.ndarray, bbox: list[int], threshold: float = 0.
     person_h = y2 - y1
     person_w = x2 - x1
     if person_h < 20 or person_w < 20:
-        return {"wearing_jacket": False, "white_ratio": 0.0, "confidence": 0.0}
+        return {"wearing_jacket": False, "yellow_ratio": 0.0, "confidence": 0.0}
 
-    # Extract TORSO region — larger area for stability
-    # Skip head (top 20%) and legs (bottom 35%)
+    # Extract TORSO region — skip head (top 20%) and legs (bottom 35%)
     torso_y1 = y1 + int(person_h * 0.20)
     torso_y2 = y1 + int(person_h * 0.65)
     torso_x1 = x1 + int(person_w * 0.10)
@@ -47,42 +44,33 @@ def check_white_jacket(frame: np.ndarray, bbox: list[int], threshold: float = 0.
 
     torso = frame[torso_y1:torso_y2, torso_x1:torso_x2]
     if torso.size == 0:
-        return {"wearing_jacket": False, "white_ratio": 0.0, "confidence": 0.0}
+        return {"wearing_jacket": False, "yellow_ratio": 0.0, "confidence": 0.0}
 
-    # Method 1: HSV white/light detection (very permissive for distance)
     hsv = cv2.cvtColor(torso, cv2.COLOR_BGR2HSV)
 
-    # Broad white/light detection — catches white even in shadow
-    lower_light = np.array([0, 0, 120])
-    upper_light = np.array([180, 100, 255])
-    light_mask = cv2.inRange(hsv, lower_light, upper_light)
+    # Yellow safety jacket HSV range (covers fluorescent yellow to yellow-green)
+    # Hue 20-45 = yellow spectrum, high saturation + high value = vivid fluorescent
+    lower_yellow = np.array([20, 80, 120])
+    upper_yellow = np.array([45, 255, 255])
+    yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+
+    # Also catch fluorescent green-yellow (lime) vests
+    lower_lime = np.array([35, 80, 120])
+    upper_lime = np.array([75, 255, 255])
+    lime_mask = cv2.inRange(hsv, lower_lime, upper_lime)
+
+    combined_mask = cv2.bitwise_or(yellow_mask, lime_mask)
 
     total_pixels = torso.shape[0] * torso.shape[1]
-    light_pixels = cv2.countNonZero(light_mask)
-    light_ratio = light_pixels / total_pixels
+    yellow_pixels = cv2.countNonZero(combined_mask)
+    yellow_ratio = yellow_pixels / total_pixels
 
-    # Method 2: Average brightness of torso
-    gray = cv2.cvtColor(torso, cv2.COLOR_BGR2GRAY)
-    avg_brightness = float(np.mean(gray))
-    # White jacket: avg brightness typically > 150
-    # Dark clothing: avg brightness typically < 100
-    brightness_score = min(1.0, max(0.0, (avg_brightness - 80) / 120))
-
-    # Method 3: Check if torso is significantly brighter than dark reference
-    # Dark clothing (black/navy) has brightness < 80
-    is_bright = avg_brightness > 130
-
-    # Combined score
-    combined_score = (light_ratio * 0.5) + (brightness_score * 0.5)
-    wearing = combined_score >= threshold or (is_bright and light_ratio > 0.15)
-
-    confidence = min(1.0, combined_score / threshold) if wearing else min(1.0, (threshold - combined_score) / threshold)
+    wearing = yellow_ratio >= threshold
+    confidence = min(1.0, yellow_ratio / threshold) if wearing else min(1.0, (threshold - yellow_ratio) / threshold)
 
     return {
         "wearing_jacket": wearing,
-        "white_ratio": round(light_ratio, 3),
-        "brightness": round(avg_brightness, 1),
-        "combined_score": round(combined_score, 3),
+        "yellow_ratio": round(yellow_ratio, 3),
         "confidence": round(confidence, 3),
     }
 
@@ -98,13 +86,12 @@ def check_persons_ppe(frame: np.ndarray, detections: list[dict], camera_id: int 
     # Check the primary (largest) person
     raw_results = []
     for det in persons:
-        ppe = check_white_jacket(frame, det["bbox"])
+        ppe = check_safety_jacket(frame, det["bbox"])
         raw_results.append({
             "bbox": det["bbox"],
             "confidence": det.get("confidence", 0),
             "wearing_jacket": ppe["wearing_jacket"],
-            "white_ratio": ppe["white_ratio"],
-            "brightness": ppe.get("brightness", 0),
+            "yellow_ratio": ppe["yellow_ratio"],
             "ppe_confidence": ppe["confidence"],
         })
 

@@ -7,15 +7,26 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api import cameras, zones, rules, events, ws, faces, operations
+from app.api import cameras, zones, rules, events, ws, faces, operations, ai_enrichment
 import app.models.ops  # noqa: F401 — register ORM models
+import app.models.ai_enrichment  # noqa: F401 — register AI enrichment model
 from app.services.stream_processor import stream_manager
 from app.services.face_recognizer import face_recognizer
 
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_DIR / "opencam.log", encoding="utf-8"),
+    ],
 )
+# Keep noisy libs at WARNING
+for noisy in ("uvicorn.access", "watchfiles", "httpcore", "httpx", "urllib3"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -66,6 +77,7 @@ app.include_router(events.router)
 app.include_router(faces.router)
 app.include_router(operations.router)
 app.include_router(ws.router)
+app.include_router(ai_enrichment.router)
 
 # Serve snapshots
 snapshots_path = Path(settings.SNAPSHOTS_DIR)

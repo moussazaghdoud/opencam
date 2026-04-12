@@ -3,6 +3,7 @@ import cv2
 import base64
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
+from app.core.config import settings
 from app.services.stream_processor import stream_manager
 from app.services.counter import get_tracker
 from app.services.ppe_detector import check_persons_ppe
@@ -131,6 +132,15 @@ async def camera_feed(websocket: WebSocket, camera_id: int):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2,
                 )
 
+            # People counter badge (bottom-left corner) — count actual persons in frame
+            person_count = sum(1 for d in detections if d.get("object_type") == "person")
+            counter_label = f"People: {person_count}"
+            (tw, th), _ = cv2.getTextSize(counter_label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            pad = 8
+            cv2.rectangle(annotated, (10, h - th - pad * 2 - 10), (10 + tw + pad * 2, h - 10), (30, 30, 30), -1)
+            cv2.putText(annotated, counter_label, (10 + pad, h - 10 - pad),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
             # Draw face recognitions (label only, face already blurred if privacy on)
             for face in faces:
                 x1, y1, x2, y2 = face["bbox"]
@@ -151,22 +161,19 @@ async def camera_feed(websocket: WebSocket, camera_id: int):
                     cv2.putText(annotated, label, (x1, y1 - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-            # PPE check
-            ppe_results = check_persons_ppe(frame, detections, camera_id=camera_id)
-            ppe_violation = False
+            # PPE check — detect yellow safety jacket (if enabled)
+            safety_jacket_detected = False
+            ppe_results = check_persons_ppe(frame, detections, camera_id=camera_id) if settings.ENABLE_PPE_DETECTION else []
             for ppe in ppe_results:
                 px1, py1, px2, py2 = ppe["bbox"]
                 if ppe["wearing_jacket"]:
-                    cv2.putText(annotated, "JACKET OK", (px1, py2 + 20),
+                    cv2.putText(annotated, "SAFETY JACKET", (px1, py2 + 20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                else:
-                    cv2.putText(annotated, "NO JACKET!", (px1, py2 + 20),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.rectangle(annotated, (px1, py1), (px2, py2), (0, 0, 255), 3)
-                    ppe_violation = True
+                    cv2.rectangle(annotated, (px1, py1), (px2, py2), (0, 255, 0), 2)
+                    safety_jacket_detected = True
 
-            # Heatmap overlay (toggled via API)
-            if _heatmap_mode.get(camera_id, False):
+            # Heatmap overlay (toggled via API, only if module enabled)
+            if settings.ENABLE_HEATMAP and _heatmap_mode.get(camera_id, False):
                 heatmap_img = heatmap_accumulator.get_heatmap_image(camera_id, w, h)
                 heatmap_bgr = heatmap_img[:, :, :3]
                 mask = heatmap_img[:, :, 3] > 0
@@ -179,10 +186,11 @@ async def camera_feed(websocket: WebSocket, camera_id: int):
             await websocket.send_json({
                 "frame": b64,
                 "detections": detections,
-                "ppe_violation": ppe_violation,
+                "safety_jacket_detected": safety_jacket_detected,
                 "faces": faces,
                 "privacy_mode": privacy,
                 "camera_id": camera_id,
+                "person_count": person_count,
             })
 
             await asyncio.sleep(0.1)

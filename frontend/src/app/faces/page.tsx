@@ -11,9 +11,9 @@ import {
   UserCheck,
   UserX,
   User,
-  X,
   ChevronDown,
 } from "lucide-react";
+import CameraFeed from "@/components/CameraFeed";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -59,6 +59,8 @@ export default function FacesPage() {
   const [formFile, setFormFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [captureProgress, setCaptureProgress] = useState(0);
+  const captureIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [recognizing, setRecognizing] = useState(false);
   const [recognitionResults, setRecognitionResults] = useState<
     RecognitionResult[]
@@ -66,7 +68,6 @@ export default function FacesPage() {
   const [recognitionCameraId, setRecognitionCameraId] = useState<number | null>(
     null
   );
-  const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null);
   const [hoveredFace, setHoveredFace] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -118,20 +119,43 @@ export default function FacesPage() {
     }
 
     setSubmitting(true);
+    setCaptureProgress(0);
+
+    // Animate progress bar during camera capture (~1.5s for 15 frames)
+    if (formMode === "capture") {
+      let progress = 0;
+      captureIntervalRef.current = setInterval(() => {
+        progress += 100 / 15; // 15 steps over 1.5s
+        setCaptureProgress(Math.min(progress, 92)); // hold at 92% until done
+      }, 100);
+    }
+
     try {
       const res = await fetch(`${API}/api/faces/register`, {
         method: "POST",
         body: formData,
       });
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+        captureIntervalRef.current = null;
+      }
+      setCaptureProgress(100);
       if (res.ok) {
-        setFormName("");
-        setFormRole("");
-        setFormFile(null);
-        setShowAdd(false);
-        fetchFaces();
+        setTimeout(() => {
+          setFormName("");
+          setFormRole("");
+          setFormFile(null);
+          setCaptureProgress(0);
+          setShowAdd(false);
+          fetchFaces();
+        }, 400);
       }
     } catch {
-      /* error */
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+        captureIntervalRef.current = null;
+      }
+      setCaptureProgress(0);
     }
     setSubmitting(false);
   };
@@ -149,9 +173,6 @@ export default function FacesPage() {
   const handleRecognize = async () => {
     if (!recognitionCameraId) return;
     setRecognizing(true);
-    setSnapshotUrl(
-      `${API}/api/cameras/${recognitionCameraId}/snapshot?t=${Date.now()}`
-    );
     try {
       const res = await fetch(
         `${API}/api/faces/recognize?camera_id=${recognitionCameraId}`,
@@ -198,7 +219,7 @@ export default function FacesPage() {
       {/* Register Face Panel */}
       <div
         className={`overflow-hidden transition-all duration-300 ease-in-out ${
-          showAdd ? "max-h-[500px] opacity-100 mb-6" : "max-h-0 opacity-0 mb-0"
+          showAdd ? "max-h-[1000px] opacity-100 mb-6" : "max-h-0 opacity-0 mb-0"
         }`}
       >
         <form
@@ -278,7 +299,7 @@ export default function FacesPage() {
               <label className="block text-xs font-medium text-zinc-400 mb-1.5">
                 Camera
               </label>
-              <div className="relative">
+              <div className="relative mb-3">
                 <select
                   value={formCameraId || ""}
                   onChange={(e) => setFormCameraId(Number(e.target.value))}
@@ -292,8 +313,18 @@ export default function FacesPage() {
                 </select>
                 <ChevronDown className="w-3.5 h-3.5 text-zinc-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               </div>
-              <p className="text-[11px] text-zinc-600 mt-1">
-                Look directly at the camera when registering
+
+              {/* Live preview during registration — compact size */}
+              {formCameraId && (() => {
+                const cam = cameras.find((c) => c.id === formCameraId);
+                return cam ? (
+                  <div className="rounded-lg overflow-hidden border border-[#27272a] w-[40%]">
+                    <CameraFeed cameraId={cam.id} cameraName={cam.name} />
+                  </div>
+                ) : null;
+              })()}
+              <p className="text-[11px] text-zinc-500 mt-2">
+                Position yourself so your face is clearly visible, then click Register Face
               </p>
             </div>
           )}
@@ -357,16 +388,36 @@ export default function FacesPage() {
               disabled={submitting}
               className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg text-sm font-medium transition-all duration-200"
             >
-              {submitting ? "Registering..." : "Register Face"}
+              {submitting ? "Capturing..." : "Register Face"}
             </button>
             <button
               type="button"
               onClick={() => setShowAdd(false)}
-              className="px-5 py-2.5 bg-[#27272a] hover:bg-[#333] rounded-lg text-sm transition-all duration-200"
+              disabled={submitting}
+              className="px-5 py-2.5 bg-[#27272a] hover:bg-[#333] disabled:opacity-50 rounded-lg text-sm transition-all duration-200"
             >
               Cancel
             </button>
           </div>
+
+          {/* Capture progress bar */}
+          {submitting && formMode === "capture" && (
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs text-zinc-400">Capturing frames…</span>
+                <span className="text-xs text-zinc-500">{Math.round(captureProgress)}%</span>
+              </div>
+              <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 rounded-full transition-all duration-100"
+                  style={{ width: `${captureProgress}%` }}
+                />
+              </div>
+              <p className="text-[11px] text-zinc-600 mt-1.5">
+                Hold still — sampling {captureProgress < 92 ? "in progress" : "complete, processing…"}
+              </p>
+            </div>
+          )}
         </form>
       </div>
 
@@ -389,7 +440,7 @@ export default function FacesPage() {
                   {/* Photo */}
                   <div className="w-full aspect-square bg-[#09090b] overflow-hidden">
                     <img
-                      src={`${API}/api/faces/${face.id}/photo`}
+                      src={`${API}/api/faces/${face.id}/photo?t=${face.created_at || face.id}`}
                       alt={face.name}
                       className="w-full h-full object-cover"
                     />
@@ -490,24 +541,17 @@ export default function FacesPage() {
               </div>
             </div>
 
-            {/* Snapshot */}
-            {snapshotUrl && (
-              <div
-                className={`relative ${
-                  recognizing
-                    ? "ring-2 ring-emerald-500/50 ring-offset-0 animate-pulse"
-                    : ""
-                }`}
-              >
-                <div className="aspect-video bg-black">
-                  <img
-                    src={snapshotUrl}
-                    alt="Camera snapshot"
-                    className="w-full h-full object-contain"
-                  />
-                </div>
+            {/* Live feed */}
+            {recognitionCameraId && (
+              <div className={`relative ${recognizing ? "ring-2 ring-emerald-500/50" : ""}`}>
+                {(() => {
+                  const cam = cameras.find((c) => c.id === recognitionCameraId);
+                  return cam ? (
+                    <CameraFeed cameraId={cam.id} cameraName={cam.name} />
+                  ) : null;
+                })()}
                 {recognizing && (
-                  <div className="absolute inset-0 border-2 border-emerald-500/40 rounded-none animate-pulse" />
+                  <div className="absolute inset-0 border-2 border-emerald-500/40 pointer-events-none animate-pulse" />
                 )}
               </div>
             )}
@@ -587,8 +631,8 @@ export default function FacesPage() {
               </div>
             )}
 
-            {/* Empty state */}
-            {!snapshotUrl && recognitionResults.length === 0 && (
+            {/* Empty state — only shown when no camera selected */}
+            {!recognitionCameraId && (
               <div className="p-12 text-center">
                 <ScanFace className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
                 <div className="text-zinc-400 font-medium text-sm">
