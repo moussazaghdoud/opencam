@@ -377,11 +377,14 @@ class ArcFaceRecognizer:
                     used.add(j)
         return keep
 
-    def _match_embedding(self, embedding: np.ndarray, threshold: float = 0.35) -> dict | None:
+    def _match_embedding(self, embedding: np.ndarray, base_threshold: float = 0.35) -> dict | None:
         """Match an embedding against all stored embeddings using cosine similarity.
 
         Each known person may have multiple embeddings (different angles/expressions).
         We take the best similarity across all of them.
+
+        Adaptive threshold: persons with more stored embeddings get a slightly
+        lower threshold (more angle coverage = more confident at lower similarity).
         """
         best_match = None
         best_sim = 0.0
@@ -392,6 +395,16 @@ class ArcFaceRecognizer:
                 logger.warning(f"No embeddings for {name} — re-register this face")
                 continue
 
+            # Adaptive threshold: lower if person has many embeddings (better coverage)
+            # 1 embedding: base (0.35), 5+: base - 0.05 (0.30), 10+: base - 0.08 (0.27)
+            emb_count = len(stored)
+            if emb_count >= 10:
+                threshold = base_threshold - 0.08
+            elif emb_count >= 5:
+                threshold = base_threshold - 0.05
+            else:
+                threshold = base_threshold
+
             # Compare query against every stored embedding, keep best
             sims = cosine_similarity(
                 embedding.reshape(1, -1),
@@ -399,16 +412,25 @@ class ArcFaceRecognizer:
             )[0]
             sim = float(sims.max())
 
-            logger.info(f"Similarity {name}: {sim:.3f} (threshold: {threshold}, "
-                        f"stored embeddings: {len(stored)})")
+            # Also compute top-3 average for persons with many embeddings
+            # This reduces false positives from a single noisy stored embedding
+            if emb_count >= 3:
+                top3 = float(np.sort(sims)[-3:].mean())
+                # Use top-3 avg if it's close to max (confirms match isn't a fluke)
+                effective_sim = sim if top3 > threshold * 0.85 else top3
+            else:
+                effective_sim = sim
 
-            if sim > threshold and sim > best_sim:
-                best_sim = sim
+            logger.info(f"Similarity {name}: {sim:.3f} (top3avg: {top3 if emb_count >= 3 else sim:.3f}, "
+                        f"threshold: {threshold:.3f}, embeddings: {emb_count})")
+
+            if effective_sim > threshold and effective_sim > best_sim:
+                best_sim = effective_sim
                 best_match = {
                     "name": name,
                     "role": info["role"],
                     "id": info.get("id"),
-                    "similarity": sim,
+                    "similarity": round(sim, 3),
                 }
 
         if best_match:

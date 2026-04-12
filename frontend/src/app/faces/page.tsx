@@ -62,6 +62,13 @@ export default function FacesPage() {
   const [captureProgress, setCaptureProgress] = useState(0);
   const captureIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [recognizing, setRecognizing] = useState(false);
+  const [registrationQuality, setRegistrationQuality] = useState<{
+    quality: string;
+    embeddings_generated: number;
+    faces_detected: number;
+    total_frames: number;
+    angles_covered: string[];
+  } | null>(null);
   const [recognitionResults, setRecognitionResults] = useState<
     RecognitionResult[]
   >([]);
@@ -121,13 +128,15 @@ export default function FacesPage() {
     setSubmitting(true);
     setCaptureProgress(0);
 
-    // Animate progress bar during camera capture (~1.5s for 15 frames)
+    setRegistrationQuality(null);
+
+    // Animate progress bar during camera capture (~6s for 30 frames)
     if (formMode === "capture") {
       let progress = 0;
       captureIntervalRef.current = setInterval(() => {
-        progress += 100 / 15; // 15 steps over 1.5s
-        setCaptureProgress(Math.min(progress, 92)); // hold at 92% until done
-      }, 100);
+        progress += 100 / 30; // 30 steps over 6s
+        setCaptureProgress(Math.min(progress, 92));
+      }, 200);
     }
 
     try {
@@ -141,14 +150,21 @@ export default function FacesPage() {
       }
       setCaptureProgress(100);
       if (res.ok) {
+        const data = await res.json();
+        if (data.quality) {
+          setRegistrationQuality(data.quality);
+        }
         setTimeout(() => {
           setFormName("");
           setFormRole("");
           setFormFile(null);
           setCaptureProgress(0);
-          setShowAdd(false);
+          if (!data.quality || data.quality.quality !== "poor") {
+            setShowAdd(false);
+            setRegistrationQuality(null);
+          }
           fetchFaces();
-        }, 400);
+        }, data.quality ? 3000 : 400);
       }
     } catch {
       if (captureIntervalRef.current) {
@@ -404,7 +420,7 @@ export default function FacesPage() {
           {submitting && formMode === "capture" && (
             <div className="mt-4">
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs text-zinc-400">Capturing frames…</span>
+                <span className="text-xs text-zinc-400">Capturing multi-angle frames…</span>
                 <span className="text-xs text-zinc-500">{Math.round(captureProgress)}%</span>
               </div>
               <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
@@ -414,8 +430,49 @@ export default function FacesPage() {
                 />
               </div>
               <p className="text-[11px] text-zinc-600 mt-1.5">
-                Hold still — sampling {captureProgress < 92 ? "in progress" : "complete, processing…"}
+                {captureProgress < 30
+                  ? "Look at the camera — capturing frontal view..."
+                  : captureProgress < 60
+                  ? "Slowly turn your head left and right..."
+                  : captureProgress < 92
+                  ? "Almost done — tilt your head slightly..."
+                  : "Processing embeddings…"}
               </p>
+            </div>
+          )}
+
+          {registrationQuality && (
+            <div className={`mt-4 p-3 rounded-lg border ${
+              registrationQuality.quality === "excellent"
+                ? "bg-emerald-500/10 border-emerald-500/20"
+                : registrationQuality.quality === "good"
+                ? "bg-blue-500/10 border-blue-500/20"
+                : registrationQuality.quality === "fair"
+                ? "bg-amber-500/10 border-amber-500/20"
+                : "bg-red-500/10 border-red-500/20"
+            }`}>
+              <div className="flex items-center justify-between mb-2">
+                <span className={`text-xs font-bold uppercase ${
+                  registrationQuality.quality === "excellent" ? "text-emerald-400"
+                    : registrationQuality.quality === "good" ? "text-blue-400"
+                    : registrationQuality.quality === "fair" ? "text-amber-400"
+                    : "text-red-400"
+                }`}>
+                  Registration: {registrationQuality.quality}
+                </span>
+                <span className="text-xs text-zinc-500">
+                  {registrationQuality.embeddings_generated} embeddings
+                </span>
+              </div>
+              <div className="text-[11px] text-zinc-400 space-y-0.5">
+                <p>Frames captured: {registrationQuality.total_frames} | Faces detected: {registrationQuality.faces_detected}</p>
+                {registrationQuality.angles_covered.length > 0 && (
+                  <p>Angles: {registrationQuality.angles_covered.join(", ")}</p>
+                )}
+                {(registrationQuality.quality === "poor" || registrationQuality.quality === "failed") && (
+                  <p className="text-amber-400 mt-1">Try again with better lighting or closer to the camera.</p>
+                )}
+              </div>
             </div>
           )}
         </form>
